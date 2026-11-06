@@ -13,6 +13,7 @@ Har personen varit stilla ovanligt länge frågar datorn hur hen mår. Den lär 
 | `.env` | **Dina hemliga nycklar** (Telegram, Twilio …). Dela den aldrig. |
 | `detector.py` | Fall-logiken: kroppspunkter → "har personen ramlat?" |
 | `voice.py` | Prata, lyssna, Whisper (tal → text), samtalet efter ett fall, lyssnar efter rop på hjälp |
+| `camera.py` | När kameran får vara på: alltid, vissa tider eller vid misstanke |
 | `routine.py` | Inaktivitetskoll, inlärda rutiner och dagliga koller |
 | `brain.py` | Språk-AI:n som förstår svaret (Claude / Ollama / ordlista) |
 | `notify.py` | Telegram, ntfy, samtal via Twilio, svar från anhöriga |
@@ -86,6 +87,44 @@ Kameran håller koll på när personen senast **rörde sig**. Har det varit stil
 **Den lär sig rutinerna.** Varje timme på dygnet sparas hur mycket personen brukar röra sig. Efter 3 dagar används det inlärda dygnet i stället för standarddygnet (vaken 07–22). Brukar hen gå ut 13–16, eller sova till 9, frågar den inte då. Se vad den lärt sig med `python main.py --rutiner`. Det sparas i `rutiner.json` (bara siffror, inga bilder). Ta bort filen för att börja om.
 
 Inställningar i `config.py`: `INACTIVITY_LIMIT` (högre = frågar mer sällan), `LYING_STILL_LIMIT`, `MOVE_THRESHOLD`. Stäng av med `INACTIVITY_CHECK=0` i `.env`.
+
+## Integritet: kameran behöver inte vara på hela tiden
+
+Välj läge i `.env`:
+
+```
+CAMERA_MODE=alltid          # alltid på (standard)
+CAMERA_MODE=tider           # bara vissa tider, se CAMERA_HOURS
+CAMERA_HOURS=22-08          # t.ex. natten, eller flera: 22-08,13-15
+CAMERA_MODE=vid_misstanke   # av, startar bara när något verkar fel
+```
+
+**Vid misstanke** startar kameran i 3 minuter (`WAKE_MINUTES`) när:
+
+| Det här händer | Vad kameran gör |
+|---|---|
+| Mikrofonen hör en **smäll** | Startar. Ligger personen ner = som ett fall (frågar hur hen mår). Syns ingen frågar den "Jag hörde en smäll. Är allt bra?" |
+| Någon **ropar på hjälp** | Startar, så att larmet får en bild |
+| Ingen svarar på **dagens koll** | Startar och ser efter om personen ligger ner |
+
+**Personen bestämmer själv**, i alla lägen:
+
+| Säg | Vad som händer |
+|---|---|
+| "Pausa kameran" / "Stäng av kameran" | Av i 2 timmar (`MANUAL_HOURS`). Du får ett meddelande om det |
+| "Slå på kameran" | På igen |
+
+Under en paus startar inte kameran ens vid en smäll. Då frågar datorn med rösten i stället. Rop på hjälp larmar alltid.
+
+**Anhöriga i Telegram:** `/paus 3` (pausa i 3 tim), `/på`, `/status`. Det som ändras sägs alltid **högt hemma**, så ingen blir övervakad i smyg.
+
+**Annat som skyddar integriteten**
+- Lampan bredvid Mac-kameran lyser när kameran är på. Det går inte att fuska med.
+- Larmbilden är en **streckgubbe** på svart (`ALARM_IMAGE=foto` för riktig bild).
+- Allt körs på datorn. Inget filmas eller sparas. Mikrofonen gör om tal till text lokalt och sparar inget.
+- Pågår ett larm eller en koll stängs kameran aldrig av mitt i.
+
+Bra att veta: med kameran av märks ett tyst fall (ingen smäll, inget rop) bara av den dagliga kollen, och inaktivitetskollen vilar. Smällen hörs bara medan mikrofonen lyssnar, inte under de sekunder Whisper tolkar ljudet. Är smäll-känsligheten fel, justera `THUD_LEVEL` i `config.py` (terminalen skriver `[LJUD] Hörde en smäll`).
 
 ## Dagliga koller
 

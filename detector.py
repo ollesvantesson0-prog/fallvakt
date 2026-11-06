@@ -103,6 +103,7 @@ class FallDetector:
         self.ask_started = None
         self.voice_result = None        # (ask_id, resultat, sammanfattning) – sätts av röst-tråden
         self.ok_since = None
+        self.suspect_until = 0.0        # kameran väcktes av en misstanke – ligger hen ner räknas det som fall
         self.pending_alarm = None       # sätts från andra trådar: rop på hjälp, inaktivitetskoll
         self.alarm_by_call = False
 
@@ -120,7 +121,9 @@ class FallDetector:
         self.speed = self._hip_speed(t, pose["hip_y"])
         lying, upright = is_lying(pose), is_upright(pose)
 
-        if self.state == "OK" and self.speed >= cfg.DROP_SPEED:
+        if self.state == "OK" and lying and t < self.suspect_until:
+            self._go_down(t)                # ligger redan ner när kameran startar – fallet hann inte ses
+        elif self.state == "OK" and self.speed >= cfg.DROP_SPEED:
             self.state, self.drop_time = "MÖJLIGT FALL", t
 
         if self.state == "MÖJLIGT FALL":
@@ -154,6 +157,10 @@ class FallDetector:
     def call_for_help(self, summary):
         """Anropas från lyssnaren när någon ropat på hjälp och inte sagt nej på kontrollfrågan."""
         self.raise_alarm(f"Personen ropade på hjälp. {summary}")
+
+    def suspect(self, until):
+        """Kameran startade för att något verkade fel. Ligger personen ner innan `until` -> som ett fall."""
+        self.suspect_until = until
 
     def raise_alarm(self, reason):
         """Larm som inte kommer från fall-logiken. Skickas vid nästa bild."""

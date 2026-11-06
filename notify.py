@@ -154,15 +154,46 @@ class TelegramChat:
                             self.on_message("knapp", cq["data"])
                     elif "text" in u.get("message", {}):               # vanligt meddelande
                         msg = u["message"]
-                        if self._is_ours(msg["chat"]) and not msg["text"].startswith("/"):
-                            self.on_message("text", msg["text"])
+                        if self._is_ours(msg["chat"]):
+                            kind = "kommando" if msg["text"].startswith("/") else "text"
+                            self.on_message(kind, msg["text"])
             except Exception as e:
                 print(f"  !! Telegram-lyssning: {e}")
                 time.sleep(5)
 
 
-def handle_relative_message(kind, text, voice, detector, chat):
+COMMAND_HELP = "Kommandon: /paus [timmar] – pausa kameran, /på – slå på kameran, /status"
+
+
+def handle_command(text, voice, gate, chat):
+    """/paus 3, /på, /status från en anhörig. Det som ändras sägs högt hemma, så ingen blir övervakad i smyg."""
+    parts = text.split()
+    cmd = parts[0].lower().split("@")[0]
+    if gate is None or cmd not in ("/paus", "/på", "/pa", "/status"):
+        return chat.reply(COMMAND_HELP)
+    now = time.time()
+    if cmd == "/status":
+        return chat.reply(gate.status(now))
+    try:
+        hours = float(parts[1].replace(",", ".")) if len(parts) > 1 else cfg.MANUAL_HOURS
+    except ValueError:
+        return chat.reply(COMMAND_HELP)
+    if cmd == "/paus":
+        gate.pause(now, hours)
+        line = f"{cfg.ANHORIG_NAMN} har pausat kameran i {hours:g} timmar."
+    else:
+        gate.turn_on(now, hours)
+        line = f"{cfg.ANHORIG_NAMN} har slagit på kameran."
+    print(f"[TELEGRAM] {text}")
+    chat.reply(f"✅ {gate.status(now)}")
+    if voice:
+        voice.say(line)
+
+
+def handle_relative_message(kind, text, voice, detector, chat, gate=None):
     """Vad som händer när en anhörig trycker på en knapp eller skriver i Telegram."""
+    if kind == "kommando":
+        return handle_command(text, voice, gate, chat)
     if kind == "knapp" and text == "kommer":
         line = f"{cfg.ANHORIG_NAMN} har sett larmet och är på väg. Försök ligga still, hjälpen kommer snart."
     elif kind == "knapp" and text == "falsk":

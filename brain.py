@@ -64,6 +64,16 @@ def is_call_for_help(text):
     return bool(words & cfg.CALL_WORDS) or any(p in t for p in cfg.CALL_PHRASES)
 
 
+def camera_command(text):
+    """ "pausa kameran" -> "paus",  "slå på kameran" -> "på",  annars None"""
+    t = text.lower()
+    if any(p in t for p in cfg.PAUSE_PHRASES):
+        return "paus"
+    if any(p in t for p in cfg.RESUME_PHRASES):
+        return "på"
+    return None
+
+
 class Brain:
     def __init__(self):
         self.kind = self._detect()

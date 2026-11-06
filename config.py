@@ -98,6 +98,25 @@ CHECKUP_TIMES = _env("CHECKUP_TIMES", "")   # Dagliga koller, t.ex. "10:00,16:00
 
 
 # =====================================================================
+# Kameran och integritet (camera.py)
+# =====================================================================
+
+CAMERA_MODE = _env("CAMERA_MODE", "alltid")     # "alltid", "tider" eller "vid_misstanke"
+CAMERA_HOURS = _env("CAMERA_HOURS", "22-08")    # För "tider": när kameran är på, t.ex. "22-08" eller "22-08,13-15"
+WAKE_MINUTES = 3            # Så länge kameran är på efter en misstanke (smäll, rop på hjälp, inget svar)
+MANUAL_HOURS = 2            # Så länge "pausa kameran" / "slå på kameran" gäller
+ALARM_IMAGE = _env("ALARM_IMAGE", "streckgubbe")  # Bilden i larmet: "streckgubbe" eller "foto"
+
+THUD_LEVEL = 0.2            # Så hög ljudnivå en smäll måste ha. Missar den smällar? Sänk. Startar den av allt? Höj
+THUD_RATIO = 8              # ...och så många gånger högre än ljudet runt omkring
+
+PAUSE_PHRASES = ["pausa kameran", "stäng av kameran", "stänga av kameran", "stäng kameran",
+                 "fallvakt paus", "fall vakt paus"]
+RESUME_PHRASES = ["slå på kameran", "sätt på kameran", "sätta på kameran", "starta kameran",
+                  "fallvakt på", "fall vakt på"]
+
+
+# =====================================================================
 # Språk-AI
 # =====================================================================
 

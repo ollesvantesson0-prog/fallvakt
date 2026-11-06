@@ -147,6 +147,11 @@ class ActivityMonitor:
             return None
         return self._check(t, pose, lying)
 
+    def resume(self, t):
+        """Kameran har varit av – vi vet inget om tiden som gått, så börja räkna om."""
+        self.last_motion, self.ref, self.unseen_since, self.asked = t, None, None, False
+        self.last_t = None
+
     def mark_active(self, t):
         """Personen svarade att allt är bra – räkna det som aktivitet."""
         self.last_motion, self.asked = t, False

@@ -14,7 +14,7 @@ import time
 import numpy as np
 
 import config as cfg
-from brain import Brain, classify_answer, is_call_for_help
+from brain import Brain, camera_command, classify_answer, is_call_for_help
 
 
 def pick_swedish_voice():
@@ -35,6 +35,17 @@ def pick_swedish_voice():
         if score > best_score:
             best, best_score = name, score
     return best
+
+
+def is_thud(audio):
+    """En smäll: en kort bit (50 ms) som är mycket högre än ljudet runt omkring."""
+    n = 800                                     # 50 ms vid 16 kHz
+    frames = audio[: len(audio) // n * n].reshape(-1, n)
+    if len(frames) == 0:
+        return False
+    rms = np.sqrt((frames ** 2).mean(axis=1))
+    peak = float(rms.max())
+    return peak >= cfg.THUD_LEVEL and peak >= cfg.THUD_RATIO * max(float(np.median(rms)), 1e-4)
 
 
 class VoiceCheck:
@@ -245,8 +256,11 @@ class VoiceCheck:
                     print(f"  !! Följdfrågan kraschade: {e}")
             return True
 
-    def listen_for_help_in_background(self, on_help, on_followup=None):
-        """Lyssnar hela tiden i en egen tråd. Pausar medan datorn pratar eller ett samtal pågår."""
+    def listen_for_help_in_background(self, on_help, on_followup=None, on_call=None, on_thud=None,
+                                      on_command=None):
+        """Lyssnar hela tiden i en egen tråd. Pausar medan datorn pratar eller ett samtal pågår.
+        on_call() = någon ropade (innan kontrollfrågan), on_thud() = en smäll,
+        on_command("paus"/"på") = personen vill pausa eller slå på kameran."""
         def run():
             self.wait_until_ready()
             print("Lyssnar efter rop på hjälp.")
@@ -260,9 +274,18 @@ class VoiceCheck:
                     # Datorn pratade under inspelningen – det var nog den själv vi hörde ("Hjälp är på väg")
                     if self.busy_count or self.speak_lock.locked() or self.last_spoke > started - 1:
                         continue
+                    if on_thud and is_thud(audio):
+                        print("[LJUD] Hörde en smäll")
+                        on_thud()
                     heard = self.transcribe(audio)
-                    if heard and is_call_for_help(heard):
+                    if not heard:
+                        continue
+                    if is_call_for_help(heard):
+                        if on_call:
+                            on_call()
                         self.handle_call(heard, on_help, on_followup)
+                    elif on_command and camera_command(heard):
+                        on_command(camera_command(heard))
                 except Exception as e:
                     print(f"  !! Lyssnaren: {e}")
                     time.sleep(2)

@@ -11,6 +11,8 @@ FALLVAKT – startar allt och kopplar ihop delarna.
   python main.py --list-cameras   visa vilka kameror som finns
   python main.py --rutiner        visa vad den har lärt sig om personens dygn
 
+Kameran kan vara på alltid, vissa tider eller bara vid misstanke – se CAMERA_MODE i .env och README.
+
 Tangenter i kamerafönstret:  q = avsluta   p = integritetsläge   t = testlarm
 """
 
@@ -24,6 +26,7 @@ import config as cfg
 from detector import FallDetector, extract_pose, is_lying, SKELETON
 from notify import (send_alarm, send_info, call_phone, TelegramChat, handle_relative_message,
                     telegram_configured)
+from camera import CameraGate
 from routine import ActivityMonitor, CheckupSchedule, duration_text, print_routine
 
 STATE_COLORS = {"OK": (0, 200, 0), "MÖJLIGT FALL": (0, 200, 255), "LIGGER KVAR": (0, 140, 255),
@@ -83,12 +86,29 @@ def debug_line(detector, monitor, pose, t):
 # Kamera
 # =====================================================================
 
-def open_camera(source):
+def open_camera(source, must_work=True):
     cap = cv2.VideoCapture(int(source) if str(source).isdigit() else source)
     if not cap.isOpened():
-        raise SystemExit(f"Kunde inte öppna kamera '{source}'. Prova --list-cameras, och kolla att "
-                         "VS Code har kameratillstånd (Systeminställningar > Integritet och säkerhet > Kamera).")
+        msg = (f"Kunde inte öppna kamera '{source}'. Prova --list-cameras, och kolla att "
+               "VS Code har kameratillstånd (Systeminställningar > Integritet och säkerhet > Kamera).")
+        if must_work:
+            raise SystemExit(msg)
+        print(f"  !! {msg}")
+        return None
     return cap
+
+
+def camera_off_view(gate, t):
+    """Det som visas i fönstret när kameran är av."""
+    canvas = np.zeros((360, 640, 3), np.uint8)
+    for i, (text, size) in enumerate([("KAMERAN AR AV", 1.2), (ascii_text(gate.status(t)), 0.6),
+                                      ("Lyssnar fortfarande efter rop pa hjalp", 0.6)]):
+        cv2.putText(canvas, text, (20, 150 + 50 * i), cv2.FONT_HERSHEY_SIMPLEX, size, (200, 200, 200), 2 if i == 0 else 1)
+    return canvas
+
+
+def ascii_text(text):
+    return text.translate(str.maketrans("åäöÅÄÖ–", "aaoAAO-"))       # OpenCV kan inte rita å/ä/ö
 
 
 def list_cameras():
@@ -183,7 +203,7 @@ def inactivity_checkup(reason, voice, detector, monitor):
                                  on_followup=lambda info: send_info(f"Mer info: {info}"))
 
 
-def daily_checkup(hhmm, voice, detector, monitor):
+def daily_checkup(hhmm, voice, detector, monitor, gate):
     """Daglig koll: anhöriga får ett lugnt besked. Bara "behöver hjälp" ger larm."""
     print(f"[KOLL] Daglig koll {hhmm}")
 
@@ -194,11 +214,60 @@ def daily_checkup(hhmm, voice, detector, monitor):
         elif result == "hjälp":
             detector.raise_alarm(f"Dagens koll {hhmm}: personen behöver hjälp. {summary}")
         else:
-            send_info(f"Dagens koll {hhmm}: inget svar (kanske inte hemma). Inaktivitetskollen fortsätter vakta.")
+            now = time.time()
+            if gate.wake(now, "inget svar på dagens koll"):
+                detector.suspect(now + cfg.WAKE_MINUTES * 60)
+            send_info(f"Dagens koll {hhmm}: inget svar (kanske inte hemma). "
+                      + ("Kameran startar en stund för att se efter." if gate.should_watch(now) else
+                         "Kameran är pausad, så jag kan inte se efter."))
 
     voice.check_up_in_background("Hej! Det är dags för dagens koll. Hur mår du idag?",
                                  CHECKUP_SITUATION, on_result,
                                  on_followup=lambda info: send_info(f"Mer info: {info}"))
+
+
+THUD_SITUATION = ("Mikrofonen hörde en smäll, men kameran kan inte se personen. Fråga om allt är bra – "
+                  "det kan ha varit något som ramlade i golvet.")
+
+
+def thud_checkup(voice, detector):
+    """Hörde en smäll men kan inte se något: fråga med rösten. Inget svar = larm."""
+    def on_result(result, summary):
+        if result == "hjälp":
+            detector.raise_alarm(f"Hörde en smäll. Personen behöver hjälp. {summary}")
+        elif result != "ok":
+            detector.raise_alarm("Hörde en smäll och personen svarar inte.")
+
+    voice.check_up_in_background("Jag hörde en smäll. Är allt bra?", THUD_SITUATION, on_result,
+                                 on_followup=lambda info: send_info(f"Mer info: {info}"))
+
+
+def start_listening(voice, detector, gate):
+    """Lyssnar efter rop på hjälp, smällar och "pausa kameran" / "slå på kameran"."""
+    def on_call():
+        gate.wake(time.time(), "rop på hjälp")
+
+    def on_thud():
+        now = time.time()
+        if gate.paused(now):
+            thud_checkup(voice, detector)            # personen har pausat kameran – fråga i stället för att titta
+        elif gate.wake(now, "hörde en smäll", ask_if_unseen=True):
+            detector.suspect(now + cfg.WAKE_MINUTES * 60)
+
+    def on_command(cmd):
+        now, hours = time.time(), cfg.MANUAL_HOURS
+        if cmd == "paus":
+            gate.pause(now)
+            voice.say(f"Okej, kameran är avstängd i {hours} timmar. Jag hör dig fortfarande om du ropar på hjälp.")
+            send_info(f"⏸ Personen pausade kameran i {hours} tim. Skriv /på för att slå på den.")
+        else:
+            gate.turn_on(now)
+            voice.say("Okej, kameran är på.")
+            send_info("▶️ Personen slog på kameran.")
+
+    voice.listen_for_help_in_background(
+        on_help=detector.call_for_help, on_followup=lambda info: send_info(f"Mer info: {info}"),
+        on_call=on_call, on_thud=on_thud, on_command=on_command)
 
 
 def main():
@@ -210,9 +279,10 @@ def main():
 
     voice = start_voice(args)
     detector = FallDetector(use_voice=voice is not None)
+    gate = CameraGate()
     chat = None
     if telegram_configured():
-        chat = TelegramChat(lambda kind, text: handle_relative_message(kind, text, voice, detector, chat))
+        chat = TelegramChat(lambda kind, text: handle_relative_message(kind, text, voice, detector, chat, gate))
 
     if args.test_alarm:
         return test_alarm(chat)
@@ -220,49 +290,73 @@ def main():
         return test_voice(voice) if voice else None
 
     if voice and cfg.ALWAYS_LISTEN:
-        voice.listen_for_help_in_background(
-            on_help=detector.call_for_help,
-            on_followup=lambda info: send_info(f"Mer info: {info}"))
+        start_listening(voice, detector, gate)
+    elif gate.mode == "vid_misstanke":
+        print("OBS: 'vid_misstanke' behöver mikrofonen – utan röst startar kameran bara via /på i Telegram.")
 
     from ultralytics import YOLO
     print("Laddar kamera-AI (första gången laddas den ner, ~6 MB)...")
     model = YOLO(args.model)
-    cap = open_camera(args.source)
+    open_camera(args.source).release()          # kolla direkt att kameran går att öppna
 
+    cap = None
     monitor = ActivityMonitor()
     schedule = CheckupSchedule() if voice else CheckupSchedule("")
     privacy = args.privacy
     last_t, fps, last_debug = time.time(), 0.0, 0.0
     print(f"Igång! q = avsluta, p = integritetsläge, t = testlarm  (röstkoll {'PÅ' if voice else 'AV'})")
+    print(gate.status(time.time()))
 
     while True:
-        ok, frame = cap.read()
-        if not ok:
-            print("Tappade kamerabilden, försöker igen...")
-            time.sleep(0.5)
-            continue
-
         t = time.time()
-        fps = 0.9 * fps + 0.1 / max(t - last_t, 1e-6)
+        if gate.should_watch(t, busy=detector.state != "OK"):
+            if cap is None:
+                cap = open_camera(args.source, must_work=False)
+                if cap is not None:
+                    print(f"[KAMERA] På – {gate.status(t)}")
+                    monitor.resume(t)
+        elif cap is not None:
+            cap.release()
+            cap = None
+            print(f"[KAMERA] Av – {gate.status(t)}")
+
+        pose = frame = None
+        if cap is not None:
+            ok, frame = cap.read()
+            if not ok:
+                print("Tappade kamerabilden, försöker igen...")
+                time.sleep(0.5)
+                continue
+            fps = 0.9 * fps + 0.1 / max(t - last_t, 1e-6)
+            pose = extract_pose(model(frame, verbose=False, device=args.device, classes=[0])[0])
+            if pose is not None:
+                gate.note_seen()
+        else:
+            time.sleep(0.2)
         last_t = t
 
-        pose = extract_pose(model(frame, verbose=False, device=args.device, classes=[0])[0])
-        event = detector.update(t, pose)
+        event = detector.update(t, pose)        # även med kameran av: larm från rösten ska gå iväg
         calm = detector.state == "OK" and not (voice and voice.busy_count)
-        inactive = monitor.update(t, pose, lying=pose is not None and is_lying(pose),
-                                  may_ask=cfg.INACTIVITY_CHECK and calm)
-        view = draw(frame, pose, detector, monitor, t, privacy, fps)
+        inactive = None
+        if cap is not None:
+            inactive = monitor.update(t, pose, lying=pose is not None and is_lying(pose),
+                                      may_ask=cfg.INACTIVITY_CHECK and calm)
+            view = draw(frame, pose, detector, monitor, t, privacy, fps)
+        else:
+            view = camera_off_view(gate, t)
 
         if args.debug and t - last_debug >= 0.5:
             last_debug = t
-            print(debug_line(detector, monitor, pose, t))
+            print(debug_line(detector, monitor, pose, t) if cap is not None else gate.status(t))
 
         if inactive:
             inactivity_checkup(inactive, voice, detector, monitor)
+        elif calm and voice and gate.unseen_wake_ended(t):
+            thud_checkup(voice, detector)       # hörde en smäll men ingen syntes i bild
         elif calm:
             hhmm = schedule.due(t)
             if hhmm:
-                daily_checkup(hhmm, voice, detector, monitor)
+                daily_checkup(hhmm, voice, detector, monitor, gate)
 
         if event == "FRÅGA":
             print(f"[RÖST] Frågar hur personen mår (försök {detector.ask_attempt})")
@@ -273,10 +367,13 @@ def main():
                 on_followup=lambda info: send_info(f"Mer info om fallet: {info}"))
 
         elif event == "LARM":
-            ok_jpg, jpg = cv2.imencode(".jpg", view)
+            jpg = None
+            if frame is not None:
+                photo = view if cfg.ALARM_IMAGE == "foto" else draw(frame, pose, detector, monitor, t, True, fps)
+                ok_jpg, buf = cv2.imencode(".jpg", photo)
+                jpg = buf.tobytes() if ok_jpg else None
             title = "Larm!" if detector.alarm_by_call else "Möjligt fall!"
-            send_alarm(f"{title} {detector.alarm_reason} ({time.strftime('%H:%M:%S')})",
-                       jpg.tobytes() if ok_jpg else None)
+            send_alarm(f"{title} {detector.alarm_reason} ({time.strftime('%H:%M:%S')})", jpg)
             call_phone(f"Larm från Fallvakt. {title} {detector.alarm_reason}")
 
         elif event == "RESTE SIG":
@@ -292,7 +389,8 @@ def main():
             send_alarm("Testlarm från Fallvakt")
 
     monitor.routine.save()
-    cap.release()
+    if cap is not None:
+        cap.release()
     cv2.destroyAllWindows()
 
 
