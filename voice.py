@@ -143,10 +143,11 @@ class VoiceCheck:
 
     # ---- samtalet ----
 
-    def converse(self, attempt):
-        """Ett samtal med personen. Returnerar (resultat, sammanfattning, sista_repliken)."""
-        question = ("Hej! Det ser ut som att du har ramlat. Hur mår du? Behöver du hjälp?" if attempt == 1
-                    else "Jag hörde inget svar. Behöver du hjälp? Säg ja eller nej.")
+    def converse(self, attempt, first_question=None, situation=None):
+        """Ett samtal med personen. Returnerar (resultat, sammanfattning, sista_repliken).
+        Utan first_question/situation handlar samtalet om ett fall."""
+        question = ((first_question or "Hej! Det ser ut som att du har ramlat. Hur mår du? Behöver du hjälp?")
+                    if attempt == 1 else "Jag hörde inget svar. Behöver du hjälp? Säg ja eller nej.")
         history = []
         for turn in range(cfg.MAX_TURNS):
             self.say(question)
@@ -157,7 +158,7 @@ class VoiceCheck:
                 return "inget", "Personen svarar inte.", last
             history.append(("Personen", said))
 
-            d = self.brain.decide(history)
+            d = self.brain.decide(history, situation)
             print(f"  [AI] {d['beslut']} – {d['sammanfattning']}")
             if d["beslut"] == "fråga":
                 if turn < cfg.MAX_TURNS - 1:
@@ -186,18 +187,40 @@ class VoiceCheck:
             except Exception as e:
                 print(f"  !! Röstkollen kraschade: {e}")
                 result, summary, last_line = "inget", "Röstkollen kraschade.", None
-            on_result(result, summary)           # larma FÖRST...
-            if last_line:
-                self.say(last_line)              # ...prata sen
-            if result == "hjälp" and on_followup:
-                try:
-                    info = self.followup()
-                    if info:
-                        on_followup(info)
-                        self.say("Tack. Jag har skickat det till dina anhöriga.")
-                except Exception as e:
-                    print(f"  !! Följdfrågan kraschade: {e}")
+            self._finish(result, summary, last_line, on_result, on_followup)
         threading.Thread(target=run, daemon=True).start()
+
+    def _finish(self, result, summary, last_line, on_result, on_followup):
+        on_result(result, summary)               # larma FÖRST...
+        if last_line:
+            self.say(last_line)                  # ...prata sen
+        if result == "hjälp" and on_followup:
+            try:
+                info = self.followup()
+                if info:
+                    on_followup(info)
+                    self.say("Tack. Jag har skickat det till dina anhöriga.")
+            except Exception as e:
+                print(f"  !! Följdfrågan kraschade: {e}")
+
+    def check_up(self, question, situation, on_result, on_followup=None):
+        """Koll av hur personen mår (inaktivitet eller daglig koll). Frågar igen om hen är tyst."""
+        with self._busy():
+            result, summary, last_line = "inget", "Personen svarar inte.", None
+            for attempt in range(1, cfg.VOICE_ATTEMPTS + 1):
+                try:
+                    result, summary, last_line = self.converse(attempt, question, situation)
+                except Exception as e:
+                    print(f"  !! Kollen kraschade: {e}")
+                    result, summary, last_line = "inget", "Röstkollen kraschade.", None
+                    break
+                if result != "inget":
+                    break
+            self._finish(result, summary, last_line, on_result, on_followup)
+
+    def check_up_in_background(self, question, situation, on_result, on_followup=None):
+        threading.Thread(target=self.check_up, args=(question, situation, on_result, on_followup),
+                         daemon=True).start()
 
     # ---- lyssnar hela tiden efter rop på hjälp ----
 

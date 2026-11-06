@@ -2,6 +2,7 @@
 
 Kameran ser att någon ramlar → datorn frågar hur personen mår → en AI förstår svaret → larm till mobilen och ett samtal till dig.
 Ropar någon på hjälp larmar den också – även om kameran inte sett något fall.
+Har personen varit stilla ovanligt länge frågar datorn hur hen mår. Den lär sig personens dygn.
 
 ## Projektets delar
 
@@ -12,6 +13,7 @@ Ropar någon på hjälp larmar den också – även om kameran inte sett något 
 | `.env` | **Dina hemliga nycklar** (Telegram, Twilio …). Dela den aldrig. |
 | `detector.py` | Fall-logiken: kroppspunkter → "har personen ramlat?" |
 | `voice.py` | Prata, lyssna, Whisper (tal → text), samtalet efter ett fall, lyssnar efter rop på hjälp |
+| `routine.py` | Inaktivitetskoll, inlärda rutiner och dagliga koller |
 | `brain.py` | Språk-AI:n som förstår svaret (Claude / Ollama / ordlista) |
 | `notify.py` | Telegram, ntfy, samtal via Twilio, svar från anhöriga |
 | `tests/` | Tester som kollar att allt funkar, utan kamera eller mikrofon |
@@ -30,6 +32,7 @@ python main.py
 | `python main.py --test-voice` | Testar röstsamtalet utan att ramla |
 | `python main.py --no-voice` | Utan röst, larmar efter 10 s på golvet |
 | `python main.py --list-cameras` | Visar vilka kameror som finns |
+| `python main.py --rutiner` | Visar vad den har lärt sig om personens dygn |
 | `pytest` | Kör alla tester. Gör det efter att du ändrat i koden |
 
 **I kamerafönstret:** `q` avslutar, `p` slår integritetsläget av/på (bara streckgubbe), `t` skickar ett testlarm.
@@ -59,6 +62,40 @@ Mikrofonen lyssnar hela tiden (pausar när datorn själv pratar). Säger någon 
 | "Ja", något annat, eller tyst | **LARM** (notis + samtal), sen frågar den vad som hänt |
 
 Orden finns i `CALL_WORDS` och `CALL_PHRASES` i `config.py`. Stäng av med `ALWAYS_LISTEN=0` i `.env`. Obs: tv/radio som säger "hjälp" kan ge larm om ingen svarar nej.
+
+## Inaktivitetskoll och rutiner
+
+Kameran håller koll på när personen senast **rörde sig**. Har det varit stilla ovanligt länge frågar datorn:
+
+> "Hej! Jag har inte sett dig röra dig på ett tag. Hur mår du?"
+
+| Svar | Vad som händer |
+|---|---|
+| "Jag mår bra, jag läser bara" | Inget larm, räknas som rörelse |
+| Behöver hjälp | **LARM**, sen frågar den vad som hänt |
+| Tyst två gånger | **LARM** ("svarar inte – kan också vara att hen inte är hemma") |
+
+**Hur länge är "ovanligt länge"?** Det beror på tiden på dygnet:
+
+| | Frågar efter ungefär |
+|---|---|
+| Dagtid, ingen rörelse | 2 timmar |
+| Dagtid, ligger ner helt stilla | 30 minuter |
+| Natt | mycket senare (men alltid efter 14 timmar) |
+
+**Den lär sig rutinerna.** Varje timme på dygnet sparas hur mycket personen brukar röra sig. Efter 3 dagar används det inlärda dygnet i stället för standarddygnet (vaken 07–22). Brukar hen gå ut 13–16, eller sova till 9, frågar den inte då. Se vad den lärt sig med `python main.py --rutiner`. Det sparas i `rutiner.json` (bara siffror, inga bilder). Ta bort filen för att börja om.
+
+Inställningar i `config.py`: `INACTIVITY_LIMIT` (högre = frågar mer sällan), `LYING_STILL_LIMIT`, `MOVE_THRESHOLD`. Stäng av med `INACTIVITY_CHECK=0` i `.env`.
+
+## Dagliga koller
+
+Vill du att datorn frågar hur personen mår vid fasta tider, skriv in tiderna i `.env`:
+
+```
+CHECKUP_TIMES=10:00,16:00
+```
+
+Du får ett lugnt meddelande, t.ex. *"☀️ Dagens koll 10:00: mår bra. Säger att hon sovit gott."* Larm blir det bara om personen säger att hen behöver hjälp. Svarar ingen får du ett meddelande om det.
 
 ## Justera känsligheten (i `config.py`)
 

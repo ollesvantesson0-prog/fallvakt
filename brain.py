@@ -12,8 +12,10 @@ import requests
 
 import config as cfg
 
+FALL_SITUATION = "En kamera har sett personen ramla, och personen ligger nu ner."
+
 DECIDE_PROMPT = """Du är röstassistenten i ett fallarm för en äldre person som bor hemma.
-En kamera har sett personen ramla, och personen ligger nu ner. Du pratar med personen
+SITUATION Du pratar med personen
 via högtalare och mikrofon. Det personen säger har gjorts om till text av en taligenkänning
 som ibland hör fel – tolka välvilligt.
 
@@ -102,13 +104,13 @@ class Brain:
             return r.json()["message"]["content"]
         raise RuntimeError("ingen språk-AI")
 
-    def decide(self, history):
-        """history = [("Datorn", "..."), ("Personen", "..."), ...]
+    def decide(self, history, situation=None):
+        """history = [("Datorn", "..."), ("Personen", "..."), ...]   situation = varför datorn frågar
         Returnerar {"beslut": "ok"/"hjälp"/"fråga", "säg": ..., "sammanfattning": ...}"""
         last = history[-1][1]
         if self.kind != "ordlista":
             try:
-                raw = self._chat(DECIDE_PROMPT, "\n".join(f"{who}: {txt}" for who, txt in history))
+                raw = self._chat(DECIDE_PROMPT.replace("SITUATION", situation or FALL_SITUATION), "\n".join(f"{who}: {txt}" for who, txt in history))
                 match = re.search(r"\{.*\}", raw, re.S)
                 if not match:
                     raise ValueError(f"inget JSON i svaret: {raw[:80]!r}")

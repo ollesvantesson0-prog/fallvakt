@@ -128,3 +128,23 @@ def test_call_for_help_silence_alarms():
     alarms = []
     v = handle_call([], alarms)
     assert len(alarms) == 1 and v.busy_count == 0
+
+
+# ---- koller (inaktivitet / daglig koll) ----
+
+def check_up(heard, ai_replies):
+    results = []
+    v = FakeVoice(heard, FakeBrain(ai_replies))
+    v.check_up("Hur mår du?", "Daglig koll.", lambda res, summary: results.append(res))
+    return results, v
+
+
+def test_check_up_ok():
+    results, v = check_up(["Jodå, jag läser bara"],
+                          ['{"beslut":"ok","säg":"Vad bra.","sammanfattning":"Läser."}'])
+    assert results == ["ok"] and v.said[0] == "Hur mår du?"
+
+
+def test_check_up_asks_again_when_silent_then_gives_up():
+    results, v = check_up([], [])
+    assert results == ["inget"] and len(v.said) == 3       # fråga, fråga igen, "får inget svar"

@@ -9,6 +9,7 @@ FALLVAKT – startar allt och kopplar ihop delarna.
   python main.py --test-voice     testa röstsamtalet utan att ramla
   python main.py --no-voice       utan röstkoll (larmar efter 10 s på golvet)
   python main.py --list-cameras   visa vilka kameror som finns
+  python main.py --rutiner        visa vad den har lärt sig om personens dygn
 
 Tangenter i kamerafönstret:  q = avsluta   p = integritetsläge   t = testlarm
 """
@@ -20,9 +21,10 @@ import cv2
 import numpy as np
 
 import config as cfg
-from detector import FallDetector, extract_pose, SKELETON
+from detector import FallDetector, extract_pose, is_lying, SKELETON
 from notify import (send_alarm, send_info, call_phone, TelegramChat, handle_relative_message,
                     telegram_configured)
+from routine import ActivityMonitor, CheckupSchedule, duration_text, print_routine
 
 STATE_COLORS = {"OK": (0, 200, 0), "MÖJLIGT FALL": (0, 200, 255), "LIGGER KVAR": (0, 140, 255),
                 "FRÅGAR": (255, 180, 0), "SVARADE OK": (180, 220, 0), "LARM": (0, 0, 255)}
@@ -32,7 +34,7 @@ STATE_COLORS = {"OK": (0, 200, 0), "MÖJLIGT FALL": (0, 200, 255), "LIGGER KVAR"
 # Bild
 # =====================================================================
 
-def draw(frame, pose, detector, t, privacy, fps):
+def draw(frame, pose, detector, monitor, t, privacy, fps):
     """Ritar streckgubbe och status. I integritetsläge visas bara streckgubben på svart."""
     h, w = frame.shape[:2]
     canvas = np.zeros_like(frame) if privacy else frame.copy()
@@ -59,17 +61,22 @@ def draw(frame, pose, detector, t, privacy, fps):
     down = detector.seconds_down(t)
     if down:
         info += f"  nere {down:.0f}s"
+    still = monitor.still_seconds(t)
+    if still >= 60:
+        info += f"  stilla {still / 60:.0f} min"
     info += f"  {fps:.0f} fps" + ("  [PRIVAT]" if privacy else "")
     cv2.putText(canvas, info, (max(w - 480, 300), 45), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1)
     return canvas
 
 
-def debug_line(detector, pose):
+def debug_line(detector, monitor, pose, t):
+    still = f" | stilla {duration_text(monitor.still_seconds(t))}"
     if pose is None:
-        return f"{detector.state:13s} | ingen person i bild"
+        return f"{detector.state:13s} | ingen person i bild" + still
     ang = f"{pose['angle']:3.0f}°" if pose["angle"] is not None else "  ?"
     return (f"{detector.state:13s} | fart {detector.speed:+.2f} (fall ≥ {cfg.DROP_SPEED}) | "
-            f"vinkel {ang} (ligger ≥ {cfg.LYING_ANGLE}) | bredd/höjd {pose['aspect']:.2f} (ligger ≥ {cfg.LYING_ASPECT})")
+            f"vinkel {ang} (ligger ≥ {cfg.LYING_ANGLE}) | bredd/höjd {pose['aspect']:.2f} (ligger ≥ {cfg.LYING_ASPECT})"
+            + still)
 
 
 # =====================================================================
@@ -110,6 +117,7 @@ def parse_args():
     ap.add_argument("--list-cameras", action="store_true")
     ap.add_argument("--test-alarm", action="store_true")
     ap.add_argument("--test-voice", action="store_true")
+    ap.add_argument("--rutiner", action="store_true", help="Visa vad den har lärt sig om personens dygn")
     return ap.parse_args()
 
 
@@ -145,10 +153,60 @@ def test_voice(voice):
         print(f"Extra info till anhöriga: {voice.followup()}")
 
 
+# =====================================================================
+# Koller: inaktivitet och dagliga koller
+# =====================================================================
+
+INACTIVE_SITUATION = ("Kameran har inte sett personen röra sig på ovanligt länge. Du hör av dig för att "
+                      "kolla att allt är bra – personen kanske bara vilar, sover eller läser.")
+CHECKUP_SITUATION = ("Det här är en vanlig daglig koll, inget har hänt. Fråga vänligt hur personen mår idag. "
+                     "Svarar hen att allt är bra är beslutet \"ok\".")
+
+
+def inactivity_checkup(reason, voice, detector, monitor):
+    """Stilla ovanligt länge: fråga först, larma bara om hen behöver hjälp eller inte svarar."""
+    print(f"[KOLL] {reason}")
+    if not voice:
+        return detector.raise_alarm(f"{reason} (Röstkollen är avstängd.)")
+
+    def on_result(result, summary):
+        if result == "ok":
+            monitor.mark_active(time.time())
+            print(f"[KOLL] Allt bra: {summary}")
+        elif result == "hjälp":
+            detector.raise_alarm(f"{reason} Personen behöver hjälp. {summary}")
+        else:
+            detector.raise_alarm(f"{reason} Personen svarar inte – kan också vara att hen inte är hemma.")
+
+    voice.check_up_in_background("Hej! Jag har inte sett dig röra dig på ett tag. Hur mår du?",
+                                 INACTIVE_SITUATION, on_result,
+                                 on_followup=lambda info: send_info(f"Mer info: {info}"))
+
+
+def daily_checkup(hhmm, voice, detector, monitor):
+    """Daglig koll: anhöriga får ett lugnt besked. Bara "behöver hjälp" ger larm."""
+    print(f"[KOLL] Daglig koll {hhmm}")
+
+    def on_result(result, summary):
+        if result == "ok":
+            monitor.mark_active(time.time())
+            send_info(f"☀️ Dagens koll {hhmm}: mår bra. {summary}")
+        elif result == "hjälp":
+            detector.raise_alarm(f"Dagens koll {hhmm}: personen behöver hjälp. {summary}")
+        else:
+            send_info(f"Dagens koll {hhmm}: inget svar (kanske inte hemma). Inaktivitetskollen fortsätter vakta.")
+
+    voice.check_up_in_background("Hej! Det är dags för dagens koll. Hur mår du idag?",
+                                 CHECKUP_SITUATION, on_result,
+                                 on_followup=lambda info: send_info(f"Mer info: {info}"))
+
+
 def main():
     args = parse_args()
     if args.list_cameras:
         return list_cameras()
+    if args.rutiner:
+        return print_routine()
 
     voice = start_voice(args)
     detector = FallDetector(use_voice=voice is not None)
@@ -171,6 +229,8 @@ def main():
     model = YOLO(args.model)
     cap = open_camera(args.source)
 
+    monitor = ActivityMonitor()
+    schedule = CheckupSchedule() if voice else CheckupSchedule("")
     privacy = args.privacy
     last_t, fps, last_debug = time.time(), 0.0, 0.0
     print(f"Igång! q = avsluta, p = integritetsläge, t = testlarm  (röstkoll {'PÅ' if voice else 'AV'})")
@@ -188,11 +248,21 @@ def main():
 
         pose = extract_pose(model(frame, verbose=False, device=args.device, classes=[0])[0])
         event = detector.update(t, pose)
-        view = draw(frame, pose, detector, t, privacy, fps)
+        calm = detector.state == "OK" and not (voice and voice.busy_count)
+        inactive = monitor.update(t, pose, lying=pose is not None and is_lying(pose),
+                                  may_ask=cfg.INACTIVITY_CHECK and calm)
+        view = draw(frame, pose, detector, monitor, t, privacy, fps)
 
         if args.debug and t - last_debug >= 0.5:
             last_debug = t
-            print(debug_line(detector, pose))
+            print(debug_line(detector, monitor, pose, t))
+
+        if inactive:
+            inactivity_checkup(inactive, voice, detector, monitor)
+        elif calm:
+            hhmm = schedule.due(t)
+            if hhmm:
+                daily_checkup(hhmm, voice, detector, monitor)
 
         if event == "FRÅGA":
             print(f"[RÖST] Frågar hur personen mår (försök {detector.ask_attempt})")
@@ -204,9 +274,10 @@ def main():
 
         elif event == "LARM":
             ok_jpg, jpg = cv2.imencode(".jpg", view)
-            send_alarm(f"Möjligt fall! {detector.alarm_reason} ({time.strftime('%H:%M:%S')})",
+            title = "Larm!" if detector.alarm_by_call else "Möjligt fall!"
+            send_alarm(f"{title} {detector.alarm_reason} ({time.strftime('%H:%M:%S')})",
                        jpg.tobytes() if ok_jpg else None)
-            call_phone(f"Larm från Fallvakt. Möjligt fall. {detector.alarm_reason}")
+            call_phone(f"Larm från Fallvakt. {title} {detector.alarm_reason}")
 
         elif event == "RESTE SIG":
             send_info("✅ Personen har rest sig igen. Larmet är avslutat.")
@@ -220,6 +291,7 @@ def main():
         if key == ord("t"):
             send_alarm("Testlarm från Fallvakt")
 
+    monitor.routine.save()
     cap.release()
     cv2.destroyAllWindows()
 

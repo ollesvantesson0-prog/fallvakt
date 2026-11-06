@@ -76,6 +76,28 @@ EDGE_VOICE = _env("EDGE_VOICE", "sv-SE-SofieNeural")    # eller sv-SE-MattiasNeu
 
 
 # =====================================================================
+# Inaktivitetskoll och rutiner (routine.py)
+# =====================================================================
+
+INACTIVITY_CHECK = _env("INACTIVITY_CHECK", "1") != "0"  # Fråga hur personen mår om hen varit stilla länge
+MOVE_THRESHOLD = 0.02       # Så mycket kroppspunkterna måste flytta sig (andel av bilden) för att räknas som rörelse
+MOVE_INTERVAL = 1.0         # Jämför kroppspunkterna med hur de låg för så här många sekunder sedan
+INACTIVITY_LIMIT = 20       # Koll när så här många "rörelseminuter" brukar ha hänt men inte gjort det (≈ 2 tim på dagen)
+LYING_STILL_LIMIT = 5       # Samma sak när personen ligger ner (≈ 30 min på dagen)
+INACTIVITY_MIN_MINUTES = 20 # Frågar aldrig tidigare än så här
+INACTIVITY_MAX_HOURS = 14   # ...och alltid efter så här lång tid utan rörelse, oavsett tid på dygnet
+
+DEFAULT_AWAKE = (7, 22)     # Innan den lärt sig: personen antas vara vaken 07–22
+DEFAULT_ACTIVE_RATE = 10    # ...med så här många rörelseminuter per timme
+DEFAULT_NIGHT_RATE = 0.5    # ...och så här få på natten
+LEARN_MIN_DAYS = 3          # Så många dagar innan det inlärda dygnet används
+LEARN_DAYS = 14             # Rutinerna är ett medel av ungefär så här många dagar
+LEARN_MIN_WATCHED = 2700    # En timme räknas bara om kameran var igång minst så många sekunder av den
+
+CHECKUP_TIMES = _env("CHECKUP_TIMES", "")   # Dagliga koller, t.ex. "10:00,16:00". Tomt = av
+
+
+# =====================================================================
 # Språk-AI
 # =====================================================================
 

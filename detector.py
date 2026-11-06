@@ -83,7 +83,7 @@ def is_upright(pose):
 #                                           '-- tyst (2 ggr)   -> LARM
 #    Reser sig personen innan larm -> OK.   Reser sig efter larm -> "RESTE SIG" -> OK
 #    Utan röstkoll: LIGGER KVAR i 10 s -> LARM
-#    Ropar personen på hjälp (när som helst) -> LARM
+#    Ropar personen på hjälp, eller svarar inte på en koll (när som helst) -> LARM
 # =====================================================================
 
 class FallDetector:
@@ -103,7 +103,7 @@ class FallDetector:
         self.ask_started = None
         self.voice_result = None        # (ask_id, resultat, sammanfattning) – sätts av röst-tråden
         self.ok_since = None
-        self.help_call = None           # sätts av lyssnaren när någon ropar på hjälp
+        self.pending_alarm = None       # sätts från andra trådar: rop på hjälp, inaktivitetskoll
         self.alarm_by_call = False
 
     # ---- anropas utifrån ----
@@ -153,7 +153,11 @@ class FallDetector:
 
     def call_for_help(self, summary):
         """Anropas från lyssnaren när någon ropat på hjälp och inte sagt nej på kontrollfrågan."""
-        self.help_call = summary
+        self.raise_alarm(f"Personen ropade på hjälp. {summary}")
+
+    def raise_alarm(self, reason):
+        """Larm som inte kommer från fall-logiken. Skickas vid nästa bild."""
+        self.pending_alarm = reason
 
     def cancel_alarm(self):
         """Anhörig tryckte på "Falsklarm"."""
@@ -199,10 +203,10 @@ class FallDetector:
 
     def _timers(self, t):
         """Allt som händer för att TID har gått."""
-        if self.help_call:
-            summary, self.help_call = self.help_call, None
+        if self.pending_alarm:
+            reason, self.pending_alarm = self.pending_alarm, None
             if self.state != "LARM":
-                return self._alarm(t, f"Personen ropade på hjälp. {summary}", by_call=True)
+                return self._alarm(t, reason, by_call=True)
 
         if self.state == "LIGGER KVAR":
             down = t - self.down_since
