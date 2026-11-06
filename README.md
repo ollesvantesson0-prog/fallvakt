@@ -1,6 +1,7 @@
 # Fallvakt 🛟
 
 Kameran ser att någon ramlar → datorn frågar hur personen mår → en AI förstår svaret → larm till mobilen och ett samtal till dig.
+Ropar någon på hjälp larmar den också – även om kameran inte sett något fall.
 
 ## Projektets delar
 
@@ -10,7 +11,7 @@ Kameran ser att någon ramlar → datorn frågar hur personen mår → en AI fö
 | `config.py` | **Alla inställningar.** Här ändrar du känslighet, röst, tider osv. |
 | `.env` | **Dina hemliga nycklar** (Telegram, Twilio …). Dela den aldrig. |
 | `detector.py` | Fall-logiken: kroppspunkter → "har personen ramlat?" |
-| `voice.py` | Prata, lyssna, Whisper (tal → text), samtalet efter ett fall |
+| `voice.py` | Prata, lyssna, Whisper (tal → text), samtalet efter ett fall, lyssnar efter rop på hjälp |
 | `brain.py` | Språk-AI:n som förstår svaret (Claude / Ollama / ordlista) |
 | `notify.py` | Telegram, ntfy, samtal via Twilio, svar från anhöriga |
 | `tests/` | Tester som kollar att allt funkar, utan kamera eller mikrofon |
@@ -45,6 +46,19 @@ python main.py
 | **LARM** | Notis och samtal skickat | står upp i 3 s → OK, och du får "Personen har rest sig" |
 
 Reser sig personen innan larmet går blir det aldrig något larm.
+
+## Rop på hjälp
+
+Mikrofonen lyssnar hela tiden (pausar när datorn själv pratar). Säger någon t.ex. **"hjälp"**, **"ring ambulans"**, **"jag har ramlat"** eller **"jag kommer inte upp"** frågar datorn:
+
+> "Jag hörde att du behöver hjälp. Ska jag larma? Säg nej om allt är bra."
+
+| Svar | Vad som händer |
+|---|---|
+| "Nej" / "det är bra" | Inget larm |
+| "Ja", något annat, eller tyst | **LARM** (notis + samtal), sen frågar den vad som hänt |
+
+Orden finns i `CALL_WORDS` och `CALL_PHRASES` i `config.py`. Stäng av med `ALWAYS_LISTEN=0` i `.env`. Obs: tv/radio som säger "hjälp" kan ge larm om ingen svarar nej.
 
 ## Justera känsligheten (i `config.py`)
 

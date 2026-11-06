@@ -105,3 +105,25 @@ def test_false_alarm_button_resets():
     events, d = run(STAND + FALL + seconds(15, LIE))
     d.cancel_alarm()
     assert d.state == "OK"
+
+
+# ---- rop på hjälp ----
+
+def test_call_for_help_alarms_without_fall():
+    d = FallDetector(use_voice=True)
+    d.update(0, UP)
+    d.call_for_help('Personen ropade: "hjälp"')
+    assert d.update(0.05, UP) == "LARM" and "ropade" in d.alarm_reason
+
+
+def test_call_for_help_standing_resets_quietly():
+    d = FallDetector(use_voice=True)
+    d.call_for_help("hjälp")
+    events = [d.update(i / FPS, UP) for i in range(5 * FPS)]
+    assert [e for e in events if e] == ["LARM"] and d.state == "OK"
+
+
+def test_call_for_help_during_fall_alarm_not_sent_twice():
+    events, d = run(STAND + FALL + seconds(15, LIE))
+    d.call_for_help("hjälp")
+    assert d.update(20, LIE) is None and d.state == "LARM"

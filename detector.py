@@ -83,6 +83,7 @@ def is_upright(pose):
 #                                           '-- tyst (2 ggr)   -> LARM
 #    Reser sig personen innan larm -> OK.   Reser sig efter larm -> "RESTE SIG" -> OK
 #    Utan röstkoll: LIGGER KVAR i 10 s -> LARM
+#    Ropar personen på hjälp (när som helst) -> LARM
 # =====================================================================
 
 class FallDetector:
@@ -102,6 +103,8 @@ class FallDetector:
         self.ask_started = None
         self.voice_result = None        # (ask_id, resultat, sammanfattning) – sätts av röst-tråden
         self.ok_since = None
+        self.help_call = None           # sätts av lyssnaren när någon ropar på hjälp
+        self.alarm_by_call = False
 
     # ---- anropas utifrån ----
 
@@ -134,7 +137,8 @@ class FallDetector:
             if upright:
                 self.upright_since = self.upright_since or t
                 if t - self.upright_since >= cfg.UPRIGHT_RESET_SECONDS:
-                    was_alarm = self.state == "LARM"
+                    # Ropade personen på hjälp stående är "har rest sig" inget besked – återställ tyst
+                    was_alarm = self.state == "LARM" and not self.alarm_by_call
                     self._reset()
                     if was_alarm:
                         return "RESTE SIG"
@@ -146,6 +150,10 @@ class FallDetector:
     def give_voice_result(self, ask_id, result, summary):
         """Anropas från röst-tråden när samtalet är klart."""
         self.voice_result = (ask_id, result, summary)
+
+    def call_for_help(self, summary):
+        """Anropas från lyssnaren när någon ropat på hjälp och inte sagt nej på kontrollfrågan."""
+        self.help_call = summary
 
     def cancel_alarm(self):
         """Anhörig tryckte på "Falsklarm"."""
@@ -172,6 +180,7 @@ class FallDetector:
 
     def _reset(self):
         self.state, self.upright_since, self.voice_result = "OK", None, None
+        self.alarm_by_call = False
         self.ask_attempt = 0
         self.ask_id += 1                # ett sent svar från en pågående fråga ignoreras
 
@@ -181,8 +190,8 @@ class FallDetector:
         self.ask_attempt += 1
         return "FRÅGA"
 
-    def _alarm(self, t, reason):
-        self.state, self.alarm_reason = "LARM", reason
+    def _alarm(self, t, reason, by_call=False):
+        self.state, self.alarm_reason, self.alarm_by_call = "LARM", reason, by_call
         if t - self.last_alarm < cfg.ALARM_COOLDOWN:
             return None                 # larmade nyss – skicka inte igen
         self.last_alarm = t
@@ -190,6 +199,11 @@ class FallDetector:
 
     def _timers(self, t):
         """Allt som händer för att TID har gått."""
+        if self.help_call:
+            summary, self.help_call = self.help_call, None
+            if self.state != "LARM":
+                return self._alarm(t, f"Personen ropade på hjälp. {summary}", by_call=True)
+
         if self.state == "LIGGER KVAR":
             down = t - self.down_since
             if self.use_voice and down >= cfg.ASK_AFTER_SECONDS:

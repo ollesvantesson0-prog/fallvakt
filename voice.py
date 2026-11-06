@@ -1,8 +1,10 @@
 """
 Rösten: prata, lyssna, göra om tal till text (Whisper) och föra ett samtal efter ett fall.
+Lyssnar också hela tiden efter rop på hjälp, så att det går att larma även utan att kameran sett ett fall.
 """
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import tempfile
@@ -12,7 +14,7 @@ import time
 import numpy as np
 
 import config as cfg
-from brain import Brain
+from brain import Brain, classify_answer, is_call_for_help
 
 
 def pick_swedish_voice():
@@ -40,7 +42,7 @@ class VoiceCheck:
         self.model = None
         self.model_size = model_size or cfg.WHISPER_MODEL
         self.brain = brain or Brain()
-        self.speak_lock = threading.Lock()     # två saker ska inte prata samtidigt
+        self._init_sync()
         self.mac_voice = pick_swedish_voice()
         self.use_neural = cfg.NEURAL_VOICE and self._has_edge_tts()
 
@@ -52,6 +54,23 @@ class VoiceCheck:
             print("OBS: Ingen svensk röst i macOS hittades – se README.")
 
         threading.Thread(target=self._load_whisper, daemon=True).start()
+
+    def _init_sync(self):
+        self.speak_lock = threading.Lock()     # två saker ska inte prata samtidigt
+        self.mic_lock = threading.Lock()       # två saker ska inte spela in samtidigt
+        self.busy_lock = threading.Lock()
+        self.busy_count = 0                    # > 0 medan ett samtal pågår – då pausar lyssnaren
+        self.last_spoke = 0.0                  # när datorn senast pratade klart
+
+    @contextlib.contextmanager
+    def _busy(self):
+        with self.busy_lock:
+            self.busy_count += 1
+        try:
+            yield
+        finally:
+            with self.busy_lock:
+                self.busy_count -= 1
 
     @staticmethod
     def _has_edge_tts():
@@ -79,13 +98,16 @@ class VoiceCheck:
     def say(self, text):
         print(f'  [SÄGER] "{text}"')
         with self.speak_lock:
-            if self.use_neural:
-                try:
-                    self._say_neural(text)
-                    return
-                except Exception as e:
-                    print(f"  !! Neurala rösten funkade inte ({e}) – använder macOS-rösten")
-            subprocess.run(["say"] + (["-v", self.mac_voice] if self.mac_voice else []) + [text])
+            try:
+                if self.use_neural:
+                    try:
+                        self._say_neural(text)
+                        return
+                    except Exception as e:
+                        print(f"  !! Neurala rösten funkade inte ({e}) – använder macOS-rösten")
+                subprocess.run(["say"] + (["-v", self.mac_voice] if self.mac_voice else []) + [text])
+            finally:
+                self.last_spoke = time.time()
 
     @staticmethod
     def _say_neural(text):
@@ -96,11 +118,14 @@ class VoiceCheck:
 
     # ---- lyssna ----
 
-    def listen(self):
+    def listen(self, seconds=None, quiet=False):
         import sounddevice as sd
-        print("  [RÖST] Lyssnar...")
-        audio = sd.rec(int(cfg.LISTEN_SECONDS * 16000), samplerate=16000, channels=1, dtype="float32")
-        sd.wait()
+        if not quiet:
+            print("  [RÖST] Lyssnar...")
+        with self.mic_lock:
+            audio = sd.rec(int((seconds or cfg.LISTEN_SECONDS) * 16000), samplerate=16000, channels=1,
+                           dtype="float32")
+            sd.wait()
         return audio.flatten()
 
     def transcribe(self, audio):
@@ -150,8 +175,12 @@ class VoiceCheck:
         return self.brain.summarize(said) if said else None
 
     def ask_in_background(self, attempt, on_result, on_followup=None):
-        """Kör samtalet i en egen tråd så att kameran inte fryser."""
+        """Kör samtalet i en egen tråd så att kameran inte fryser. Lyssnaren pausar under tiden."""
         def run():
+            with self._busy():
+                talk()
+
+        def talk():
             try:
                 result, summary, last_line = self.converse(attempt)
             except Exception as e:
@@ -168,4 +197,50 @@ class VoiceCheck:
                         self.say("Tack. Jag har skickat det till dina anhöriga.")
                 except Exception as e:
                     print(f"  !! Följdfrågan kraschade: {e}")
+        threading.Thread(target=run, daemon=True).start()
+
+    # ---- lyssnar hela tiden efter rop på hjälp ----
+
+    def handle_call(self, heard, on_help, on_followup=None):
+        """Någon ropade på hjälp. Dubbelkolla en gång – tyst eller oklart svar larmar ändå."""
+        with self._busy():
+            print(f'[RÖST] Rop på hjälp: "{heard}"')
+            self.say("Jag hörde att du behöver hjälp. Ska jag larma? Säg nej om allt är bra.")
+            answer = self.transcribe(self.listen())
+            if answer and classify_answer(answer) == "ok":
+                self.say("Okej, då larmar jag inte.")
+                return False
+            on_help(f'Personen ropade: "{heard}"' + (f' och svarade: "{answer}"' if answer else ""))
+            self.say("Jag larmar nu. Hjälp är på väg.")
+            if on_followup:
+                try:
+                    info = self.followup()
+                    if info:
+                        on_followup(info)
+                        self.say("Tack. Jag har skickat det till dina anhöriga.")
+                except Exception as e:
+                    print(f"  !! Följdfrågan kraschade: {e}")
+            return True
+
+    def listen_for_help_in_background(self, on_help, on_followup=None):
+        """Lyssnar hela tiden i en egen tråd. Pausar medan datorn pratar eller ett samtal pågår."""
+        def run():
+            self.wait_until_ready()
+            print("Lyssnar efter rop på hjälp.")
+            while True:
+                try:
+                    if self.busy_count or self.speak_lock.locked():
+                        time.sleep(0.3)
+                        continue
+                    started = time.time()
+                    audio = self.listen(cfg.CALL_LISTEN_SECONDS, quiet=True)
+                    # Datorn pratade under inspelningen – det var nog den själv vi hörde ("Hjälp är på väg")
+                    if self.busy_count or self.speak_lock.locked() or self.last_spoke > started - 1:
+                        continue
+                    heard = self.transcribe(audio)
+                    if heard and is_call_for_help(heard):
+                        self.handle_call(heard, on_help, on_followup)
+                except Exception as e:
+                    print(f"  !! Lyssnaren: {e}")
+                    time.sleep(2)
         threading.Thread(target=run, daemon=True).start()

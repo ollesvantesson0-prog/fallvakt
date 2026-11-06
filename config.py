@@ -62,7 +62,13 @@ VOICE_TIMEOUT = 60          # Säkerhetsspärr: larma om röstkollen av någon a
 RECHECK_AFTER = 120         # Svarade "okej" men ligger kvar? Fråga igen efter så här många sekunder
 SILENCE_LEVEL = 0.002       # Ljudnivå under detta räknas som tystnad
 
-WHISPER_MODEL = "small"     # Tal-AI: "base" (snabb), "small" (standard), "medium" (bäst svenska, långsam)
+ALWAYS_LISTEN = _env("ALWAYS_LISTEN", "1") != "0"   # Lyssna hela tiden efter rop på hjälp, även utan fall
+CALL_LISTEN_SECONDS = 4     # Hur långa bitar ljud den lyssnar på åt gången
+CALL_WORDS = {"hjälp", "ambulans", "112"}           # Ett av de här orden = rop på hjälp
+CALL_PHRASES = ["hjälpa mig", "jag har ramlat", "jag har trillat", "jag har fallit",
+                "kommer inte upp", "jag kan inte resa mig"]
+
+WHISPER_MODEL = "small"   # Tal-AI: "base" (snabb), "small" (standard), "medium" (bäst svenska, långsam)
 
 VOICE_NAME = "Alva"                                     # Föredragen macOS-röst (reserv)
 NEURAL_VOICE = _env("NEURAL_VOICE", "1") != "0"         # Använd Microsofts neurala röst (kräver internet)

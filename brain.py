@@ -52,6 +52,16 @@ def classify_answer(text):
     return "inget"
 
 
+def is_call_for_help(text):
+    """Ropar någon på hjälp? Används av lyssnaren som är igång hela tiden, så den är strängare än
+    classify_answer – "ja" eller "ont" räcker inte när ingen har ställt en fråga."""
+    t = text.lower().strip()
+    if not t or any(h in t for h in cfg.HALLUCINATIONS):
+        return False
+    words = set(re.findall(r"[a-zåäöé0-9]+", t))
+    return bool(words & cfg.CALL_WORDS) or any(p in t for p in cfg.CALL_PHRASES)
+
+
 class Brain:
     def __init__(self):
         self.kind = self._detect()

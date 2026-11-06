@@ -1,10 +1,8 @@
 """Testar tolkningen av svar och röstsamtalet med påhittat tal och påhittad AI.  Kör:  pytest"""
 
-import threading
-
 import pytest
 
-from brain import Brain, classify_answer
+from brain import Brain, classify_answer, is_call_for_help
 from voice import VoiceCheck
 
 
@@ -26,6 +24,23 @@ def test_wordlist(said, expected):
     assert classify_answer(said) == expected
 
 
+# ---- rop på hjälp (lyssnaren som är igång hela tiden) ----
+
+@pytest.mark.parametrize("heard, expected", [
+    ("Hjälp!", True),
+    ("Kan någon hjälpa mig?", True),
+    ("Ring ambulans", True),
+    ("Jag har ramlat", True),
+    ("Ring 112", True),
+    ("Ja", False),                               # "ja" räcker inte när ingen har frågat
+    ("Det gör ont i ryggen idag", False),
+    ("Vad blir det till middag?", False),
+    ("Tack för att du tittade!", False),
+])
+def test_call_for_help(heard, expected):
+    assert is_call_for_help(heard) == expected
+
+
 # ---- påhittad AI och påhittat tal ----
 
 class FakeBrain(Brain):
@@ -40,7 +55,7 @@ class FakeBrain(Brain):
 class FakeVoice(VoiceCheck):
     def __init__(self, heard, brain):
         self.heard, self.brain, self.said = list(heard), brain, []
-        self.speak_lock = threading.Lock()
+        self._init_sync()
 
     def say(self, text):
         self.said.append(text)
@@ -88,3 +103,28 @@ def test_broken_ai_falls_back_to_wordlist():
 def test_silence():
     res, _, _ = converse([], [])
     assert res == "inget"
+
+
+def handle_call(heard, alarms):
+    v = FakeVoice(heard, FakeBrain([]))
+    v.brain.kind = "ordlista"
+    v.handle_call("hjälp", on_help=alarms.append)
+    return v
+
+
+def test_call_for_help_says_no_no_alarm():
+    alarms = []
+    handle_call(["nej, det var inget"], alarms)
+    assert alarms == []
+
+
+def test_call_for_help_yes_alarms():
+    alarms = []
+    handle_call(["ja"], alarms)
+    assert len(alarms) == 1 and "hjälp" in alarms[0]
+
+
+def test_call_for_help_silence_alarms():
+    alarms = []
+    v = handle_call([], alarms)
+    assert len(alarms) == 1 and v.busy_count == 0

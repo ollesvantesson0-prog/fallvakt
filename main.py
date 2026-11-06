@@ -161,6 +161,11 @@ def main():
     if args.test_voice:
         return test_voice(voice) if voice else None
 
+    if voice and cfg.ALWAYS_LISTEN:
+        voice.listen_for_help_in_background(
+            on_help=detector.call_for_help,
+            on_followup=lambda info: send_info(f"Mer info: {info}"))
+
     from ultralytics import YOLO
     print("Laddar kamera-AI (första gången laddas den ner, ~6 MB)...")
     model = YOLO(args.model)
